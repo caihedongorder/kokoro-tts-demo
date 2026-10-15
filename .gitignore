@@ -1,0 +1,12 @@
+# 依赖与缓存（体积巨大，绝不入库）
+node_modules/
+models/
+
+# 运行产物
+*.wav
+test-*.wav
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
