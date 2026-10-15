@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kokoro 本地离线中文 TTS Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    min-height: 100vh; display: flex; justify-content: center;
+    padding: 40px 16px;
+  }
+  .card {
+    width: 100%; max-width: 640px; align-self: flex-start;
+    background: #171a21; border: 1px solid #262b36; border-radius: 16px;
+    padding: 32px; box-shadow: 0 8px 32px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #8b93a7; font-size: 13px; margin-bottom: 24px; }
+  .sub b { color: #6ecf8e; }
+  textarea {
+    width: 100%; height: 120px; resize: vertical;
+    background: #0f1115; color: #e6e6e6; border: 1px solid #2c3340;
+    border-radius: 10px; padding: 12px; font-size: 15px; line-height: 1.6;
+    font-family: inherit;
+  }
+  textarea:focus { outline: 1px solid #4f8cff; }
+  .row { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+  select, button {
+    background: #1f2530; color: #e6e6e6; border: 1px solid #2c3340;
+    border-radius: 8px; padding: 10px 14px; font-size: 14px; cursor: pointer;
+    font-family: inherit;
+  }
+  button.primary {
+    background: linear-gradient(135deg, #3b82f6, #2563eb); border: none;
+    font-weight: 600; flex: 1; min-width: 140px;
+  }
+  button.primary:hover:not(:disabled) { filter: brightness(1.15); }
+  button.primary:disabled { opacity: .45; cursor: not-allowed; }
+  select:hover { border-color: #4f8cff; }
+  .speed-box { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8b93a7; }
+  input[type=range] { accent-color: #3b82f6; width: 120px; }
+  .status { margin-top: 18px; font-size: 13px; color: #8b93a7; min-height: 20px; }
+  .status .ok { color: #6ecf8e; }
+  .status .err { color: #ff7b72; }
+  .metrics { display: flex; gap: 16px; margin-top: 14px; flex-wrap: wrap; }
+  .metric {
+    background: #0f1115; border: 1px solid #262b36; border-radius: 10px;
+    padding: 10px 14px; min-width: 110px;
+  }
+  .metric .v { font-size: 20px; font-weight: 700; color: #79c0ff; }
+  .metric .l { font-size: 11px; color: #8b93a7; margin-top: 2px; }
+  audio { width: 100%; margin-top: 20px; }
+  .offline-badge {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px;
+    background: rgba(110, 207, 142, .12); color: #6ecf8e; border: 1px solid rgba(110,207,142,.3);
+    margin-left: 8px; vertical-align: 2px;
+  }
+  .downloads { margin-top: 22px; font-size: 12px; color: #8b93a7; }
+  .downloads a { color: #79c0ff; text-decoration: none; }
+  .downloads a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🗣️ Kokoro-82M v1.1-zh 本地离线中文 TTS <span class="offline-badge">100% 离线 · 纯 CPU</span></h1>
+    <div class="sub">Node.js + Express 后端 · ONNX Runtime（int8 量化）· 中文 G2P：汉字→注音+声调 · <b>无需 GPU / 无需联网（首次加载模型除外）</b></div>
+
+    <textarea id="text" placeholder="输入要合成的中文…">你好，这是一段实时离线中文语音合成测试。今天天气不错，我们去公园走走吧。数字也能读：今年是2024年。</textarea>
+
+    <div class="row">
+      <select id="voice"></select>
+      <script>
+        // 动态生成 100+ 音色下拉（服务端 /api/status 返回 voices）
+        (async () => {
+          try {
+            const r = await fetch('/api/status');
+            const j = await r.json();
+            const sel = document.getElementById('voice');
+            const groups = { zf: '女声', zm: '男声', af: '英语女声' };
+            let lastGroup = '';
+            for (const v of (j.voices || [])) {
+              const g = v.split('_')[0];
+              if (g !== lastGroup) {
+                const og = document.createElement('optgroup');
+                og.label = groups[g] || g;
+                sel.appendChild(og);
+                lastGroup = g;
+                sel._lastOG = og;
+              }
+              const opt = document.createElement('option');
+              opt.value = v;
+              opt.textContent = v;
+              sel._lastOG.appendChild(opt);
+            }
+            sel.value = 'zf_001';
+          } catch (e) { console.error(e); }
+        })();
+      </script>
+      <div class="speed-box">
+        语速 <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1"> <span id="speed-val">1.00×</span>
+      </div>
+      <label class="speed-box"><input type="checkbox" id="stream-mode" checked> 流式播放（边合成边出声）</label>
+      <button class="primary" id="btn" disabled>🔊 合成并播放</button>
+    </div>
+
+    <div class="status" id="status">正在探测服务状态…</div>
+
+    <div class="metrics" id="metrics" style="display:none">
+      <div class="metric"><div class="v" id="m-latency">-</div><div class="l">合成耗时 (ms)</div></div>
+      <div class="metric"><div class="v" id="m-duration">-</div><div class="l">音频时长 (s)</div></div>
+      <div class="metric"><div class="v" id="m-rtf">-</div><div class="l">RTF（越小越实时）</div></div>
+      <div class="metric"><div class="v" id="m-first">-</div><div class="l">流式首包 (ms)</div></div>
+    </div>
+
+    <audio id="player" controls></audio>
+
+    <div class="downloads">
+      最近一次合成：<a id="dl" download="kokoro-tts.wav" href="#">下载 WAV</a>
+      <span id="streaming-badge" style="display:none; margin-left:10px; color:#f0c674;">⚡ 流式播放中（边合成边出声）</span>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const status = $('status');
+
+$('speed').addEventListener('input', () => {
+  $('speed-val').textContent = Number($('speed').value).toFixed(2) + '×';
+});
+
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    if (j.ready) {
+      status.innerHTML = '<span class="ok">✓ 模型已就绪，输入文字后点击合成</span>';
+      $('btn').disabled = false;
+    } else if (j.loading) {
+      status.textContent = '模型加载中（首次需下载，之后走本地缓存）…';
+      setTimeout(pollStatus, 2000);
+    }
+  } catch { setTimeout(pollStatus, 2000); }
+}
+pollStatus();
+
+// ---------- 流式播放：边收 PCM 边用 Web Audio API 调度播放 ----------
+let audioCtx = null;
+let streamAbort = null;
+
+async function synthesizeStream(text, voice, speed) {
+  const btn = $('btn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ 合成中…';
+  $('metrics').style.display = 'none';
+  $('streaming-badge').style.display = 'inline';
+  status.textContent = '流式合成中…';
+  streamAbort = new AbortController();
+  const t0 = performance.now();
+  let firstChunkMs = null;
+  let receivedSec = 0;
+  try {
+    audioCtx = audioCtx || new AudioContext({ sampleRate: 24000 });
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const resp = await fetch('/api/tts/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ text, voice, speed }),
+      signal: streamAbort.signal,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || '合成失败');
+    }
+    const reader = resp.body.getReader();
+    // 播放游标：已调度到的时刻。网络跟不上就自然留空隙，赶上则无缝衔接
+    let playAt = audioCtx.currentTime + 0.05;
+    const scheduled = [];
+    let headerSkipped = false;
+    let leftover = new Uint8Array(0);
+    const CHUNK_BYTES = 24000 * 2 * 0.5; // 每 0.5s 音频切一个调度单元
+
+    const schedule = (pcmU8) => {
+      // pcmU8: 16bit LE PCM 字节流；切 0.5s 块逐块调度
+      for (let off = 0; off < pcmU8.length; off += CHUNK_BYTES) {
+        const slice = pcmU8.slice(off, off + CHUNK_BYTES);
+        const dv = new DataView(slice.buffer, slice.byteOffset, slice.byteLength);
+        const f32 = new Float32Array(Math.floor(slice.length / 2));
+        // getInt16(le) 自带符号扩展；手动 (lo|hi<<8) 会把负样本翻成正数导致爆音
+        for (let i = 0; i < f32.length; i++) {
+          f32[i] = dv.getInt16(i * 2, true) / 32768;
+        }
+        const buf = audioCtx.createBuffer(1, f32.length, 24000);
+        buf.copyToChannel(f32, 0);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        // 若调度时刻落后于当前播放头（首块），从现在播
+        if (playAt < audioCtx.currentTime) playAt = audioCtx.currentTime + 0.02;
+        src.start(playAt);
+        scheduled.push(src);
+        playAt += f32.length / 24000;
+        receivedSec += f32.length / 24000;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (firstChunkMs === null) firstChunkMs = Math.round(performance.now() - t0);
+      let data = leftover.length ? concat(leftover, value) : value;
+      if (!headerSkipped) {
+        if (data.length < 44) { leftover = data; continue; } // 攒够 WAV 头
+        data = data.slice(44);
+        headerSkipped = true;
+      }
+      // 对齐 2 字节（16bit 样本），余数留到下一轮
+      const usable = data.length - (data.length % 2);
+      leftover = data.slice(usable);
+      schedule(data.slice(0, usable));
+      status.textContent = `⚡ 流式播放中… 已接收 ${receivedSec.toFixed(1)}s 音频`;
+    }
+    // 尾部余量
+    if (leftover.length >= 2 && leftover.length % 2 === 0) schedule(leftover);
+
+    const totalMs = Math.round(performance.now() - t0);
+    const durationSec = receivedSec;
+    $('m-latency').textContent = totalMs;
+    $('m-first').textContent = firstChunkMs ?? '-';
+    $('m-duration').textContent = durationSec.toFixed(1);
+    $('m-rtf').textContent = durationSec > 0 ? (totalMs / 1000 / durationSec).toFixed(2) : '-';
+    $('metrics').style.display = 'flex';
+    status.innerHTML = `<span class="ok">✓ 流式合成完成：首包 ${firstChunkMs}ms 出声，总 ${durationSec.toFixed(1)}s 音频</span>`;
+    // 播放期间保持按钮态；结束后恢复
+    const waitEnd = Math.max(0, (playAt - audioCtx.currentTime) * 1000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = original; }, waitEnd + 200);
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      status.innerHTML = '<span class="ok">已停止</span>';
+    } else {
+      status.innerHTML = `<span class="err">✗ ${e.message}</span>`;
+    }
+    btn.disabled = false;
+    btn.textContent = original;
+  } finally {
+    $('streaming-badge').style.display = 'none';
+    streamAbort = null;
+  }
+}
+
+function concat(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a); out.set(b, a.length);
+  return out;
+}
+
+$('btn').addEventListener('click', async () => {
+  const text = $('text').value.trim();
+  if (!text) return;
+  if ($('stream-mode').checked) {
+    synthesizeStream(text, $('voice').value, Number($('speed').value));
+    return;
+  }
+  const btn = $('btn');
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = '⏳ 合成中…';
+  status.textContent = '';
+  $('metrics').style.display = 'none';
+  try {
+    const t0 = performance.now();
+    const resp = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ text, voice: $('voice').value, speed: Number($('speed').value) }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || '合成失败');
+    }
+    const latencyMs = Number(resp.headers.get('X-TTS-Latency-ms')) || Math.round(performance.now() - t0);
+    const durationSec = Number(resp.headers.get('X-TTS-Duration-s')) || 0;
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    $('player').src = url;
+    $('dl').href = url;
+    $('player').play();
+    $('m-latency').textContent = latencyMs;
+    $('m-duration').textContent = durationSec.toFixed(1);
+    $('m-rtf').textContent = durationSec > 0 ? (latencyMs / 1000 / durationSec).toFixed(2) : '-';
+    $('metrics').style.display = 'flex';
+    status.innerHTML = '<span class="ok">✓ 合成完成，正在播放（RTF &lt; 1 即快于实时）</span>';
+  } catch (e) {
+    status.innerHTML = `<span class="err">✗ ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+</script>
+</body>
+</html>
